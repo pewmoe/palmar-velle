@@ -1,4 +1,4 @@
-# velle
+# velle:BETA
 
 A lightweight, high-performance gesture-controlled virtual mouse written in **Rust**, powered by computer vision and ONNX runtime (`ort`). `velle` transforms your standard webcam into a touchless cursor controller featuring smooth tracking, deadzone jitter reduction, and native Linux kernel-level input injection via `uinput`.
 
