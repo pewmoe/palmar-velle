@@ -134,11 +134,50 @@ impl VirtualMouse {
     }
 
     pub fn scroll(&mut self, dy: f32) -> Result<()> {
-        let value = dy as i32;
+        let value = (dy * 120.0).clamp(-120.0, 120.0).round() as i32;
+        if value == 0 {
+            return Ok(());
+        }
+
         self.device.send(
             uinput::event::Relative::Wheel(uinput::event::relative::Wheel::Vertical),
             value,
         )?;
+
+        self.device.synchronize()?;
+
         Ok(())
     }
-}
+}the scroll gesture is effectively dead for two separate reasons.
+
+The recognizer is checking the wrong finger combination
+In src/gestures.rs, the scroll branch is:
+let ring = &hand.landmarks[16];
+let ring_pinched = thumb_ring < PINCH_ENTER;
+then if ring_pinched { ... emit Scroll ... }
+So the code scrolls on “thumb + ring pinch”, not “thumb + index + middle”.
+That conflicts with the UI text in README.md, which says “Thumb + Index + Middle = Vertical Scroll”.
+In practice, the ring finger is often much less stable/less easy to curl than index/middle, so this gesture is easy to miss.
+Even when the scroll event fires, the value sent to the OS is almost always zero
+In src/mouse.rs:
+let value = dy as i32;
+But dy from src/gestures.rs is a normalized palm movement delta:
+dy = palm_y - last_y
+and palm_y is in the range 0.0..=1.0
+That means dy is a tiny fraction like 0.01, 0.002, etc.
+Casting that to i32 truncates it to 0 immediately.
+So the system receives a wheel event with value 0, which does nothing.
+That means even if the detector succeeds, the final stage kills scrolling before Linux ever sees it.
+
+What to fix:
+
+Make the gesture match the intended behavior:
+either change the scroll trigger to a thumb+index+middle pinch, or intentionally keep thumb+ring if that’s your chosen gesture.
+Scale the wheel delta to a real integer wheel step before sending:
+e.g. let value = (dy * 120.0).round() as i32;
+or use a discrete step like 1 / -1 when the delta exceeds threshold
+Also increase the scroll deadzone or threshold if needed, because the current SCROLL_DEADZONE is tiny and the extracted dy is small.
+So the root cause is not just “bad camera tracking”; it’s largely this combination:
+
+wrong finger used for scroll
+and zero-valued wheel events sent to uinput

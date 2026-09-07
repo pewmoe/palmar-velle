@@ -1,10 +1,10 @@
 //! Gesture recognizer for webcam-based mouse control.
 //!
 //! Gestures:
-//!   - Index finger position -> cursor movement
+//!   - Palm center position -> cursor movement
 //!   - Thumb + index pinch -> primary click / drag
 //!   - Thumb + middle pinch -> secondary click
-//!   - Thumb + index + middle pinch -> vertical scrolling
+//!   - Thumb + ring pinch -> vertical scrolling
 //!   - Two quick index pinches -> double click
 //!
 //! All distances are normalized landmark distances.
@@ -32,7 +32,7 @@ pub struct GestureRecognizer {
     is_primary_down: bool,
     is_secondary_down: bool,
 
-    // Three-finger scrolling state.
+    // Scrolling state.
     is_scrolling: bool,
     last_scroll_y: Option<f32>,
 
@@ -95,12 +95,18 @@ impl GestureRecognizer {
         let middle = &hand.landmarks[MIDDLE_TIP];
 
         // ------------------------------------------------------------
-        // Cursor movement
+        // Cursor movement (Palm Center Centroid)
         // ------------------------------------------------------------
+        let wrist = &hand.landmarks[0];     // WRIST
+        let index_mcp = &hand.landmarks[5]; // INDEX_FINGER_MCP
+        let pinky_mcp = &hand.landmarks[17]; // PINKY_MCP
+
+        let palm_x = (wrist.x + index_mcp.x + pinky_mcp.x) / 3.0;
+        let palm_y = (wrist.y + index_mcp.y + pinky_mcp.y) / 3.0;
 
         events.push(GestureEvent::Move {
-            x: index.x.clamp(0.0, 1.0),
-            y: index.y.clamp(0.0, 1.0),
+            x: palm_x.clamp(0.0, 1.0),
+            y: palm_y.clamp(0.0, 1.0),
         });
 
         // ------------------------------------------------------------
@@ -111,12 +117,8 @@ impl GestureRecognizer {
         let thumb_middle = thumb.dist(middle);
 
         // Small threshold = pinch.
-        //
-        // Larger exit threshold gives us hysteresis and prevents
-        // button flickering when the fingertips hover around the
-        // threshold.
-        const PINCH_ENTER: f32 = 0.08;
-        const PINCH_EXIT: f32 = 0.12;
+        const PINCH_ENTER: f32 = 0.10;
+        const PINCH_EXIT: f32 = 0.14;
 
         let index_pinched = thumb_index < PINCH_ENTER;
         let index_released = thumb_index > PINCH_EXIT;
@@ -124,37 +126,32 @@ impl GestureRecognizer {
         let middle_pinched = thumb_middle < PINCH_ENTER;
         let middle_released = thumb_middle > PINCH_EXIT;
 
+        let scroll_pinched = index_pinched && middle_pinched;
+
         // ------------------------------------------------------------
-        // Three-finger pinch = scroll
+        // Thumb + Index + Middle pinch = scroll
         // ------------------------------------------------------------
-        //
-        // Both index and middle must be touching the thumb.
         //
         // While scrolling, normal left/right clicks are suppressed.
         // ------------------------------------------------------------
 
-        let three_finger_pinch = index_pinched && middle_pinched;
-
-        if three_finger_pinch {
+        if scroll_pinched {
             if !self.is_scrolling {
                 self.is_scrolling = true;
-                self.last_scroll_y = Some(index.y);
+                self.last_scroll_y = Some(palm_y);
             } else if let Some(last_y) = self.last_scroll_y {
-                let dy = index.y - last_y;
+                let dy = palm_y - last_y;
 
-                // Ignore microscopic camera noise.
-                const SCROLL_DEADZONE: f32 = 0.003;
+                const SCROLL_DEADZONE: f32 = 0.0025;
 
                 if dy.abs() > SCROLL_DEADZONE {
-                    events.push(GestureEvent::Scroll {
-                        dy,
-                    });
+                    events.push(GestureEvent::Scroll { dy });
                 }
 
-                self.last_scroll_y = Some(index.y);
+                self.last_scroll_y = Some(palm_y);
             }
 
-            // If a button was held when the three-finger pinch began,
+            // If a button was held when the scroll pinch began,
             // release it before entering scroll mode.
             if self.is_primary_down {
                 self.is_primary_down = false;
@@ -169,7 +166,7 @@ impl GestureRecognizer {
             return events;
         }
 
-        // Three-finger pinch ended.
+        // Ring pinch ended.
         if self.is_scrolling {
             self.is_scrolling = false;
             self.last_scroll_y = None;

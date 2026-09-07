@@ -598,22 +598,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f5f3913fa0bfe7ee1fd8248b6b9f42a5af4b9d65ec2dd2c3c26132b950ecfc2"
 
 [[package]]
-name = "gesture-control"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "env_logger",
- "evdev",
- "image",
- "log",
- "nokhwa",
- "opencv",
- "ort",
- "uinput",
-]
-
-[[package]]
 name = "getrandom"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1217,6 +1201,22 @@ dependencies = [
  "hmac-sha256",
  "lzma-rust2",
  "ureq",
+]
+
+[[package]]
+name = "palmar-velle-gesture-controls"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "env_logger",
+ "evdev",
+ "image",
+ "log",
+ "nokhwa",
+ "opencv",
+ "ort",
+ "uinput",
 ]
 
 [[package]]

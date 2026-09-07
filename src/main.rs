@@ -1,4 +1,3 @@
-
 mod camera;
 mod gestures;
 mod hand_model;
@@ -16,6 +15,9 @@ use mouse::VirtualMouse;
 
 fn main() -> Result<()> {
     env_logger::init();
+
+    // Initialize ort runtime environment (required for v2.0)
+    let _ = ort::init().commit();
 
     let args: Vec<String> = env::args().collect();
 
@@ -92,9 +94,6 @@ fn main() -> Result<()> {
 
         // ------------------------------------------------------------
         // 2. Convert RGB image to an OpenCV BGR Mat.
-        //
-        // hand_model.rs expects the incoming Mat to be BGR because
-        // it converts BGR -> RGB internally.
         // ------------------------------------------------------------
 
         let rgb_data = rgb.as_raw();
@@ -116,7 +115,6 @@ fn main() -> Result<()> {
         )
         .context("failed to convert RGB frame to BGR")?;
 
-        // Make sure OpenCV sees the expected dimensions.
         debug_assert_eq!(bgr_mat.cols(), width);
         debug_assert_eq!(bgr_mat.rows(), height);
 
@@ -143,36 +141,29 @@ fn main() -> Result<()> {
                 GestureEvent::Move { x, y } => {
                     mouse.move_to(x, y)?;
                 }
-
                 GestureEvent::PrimaryDown => {
                     log::debug!("Primary down");
                     mouse.left_button(true)?;
                 }
-
                 GestureEvent::PrimaryUp => {
                     log::debug!("Primary up");
                     mouse.left_button(false)?;
                 }
-
                 GestureEvent::SecondaryDown => {
                     log::debug!("Secondary down");
                     mouse.right_button(true)?;
                 }
-
                 GestureEvent::SecondaryUp => {
                     log::debug!("Secondary up");
                     mouse.right_button(false)?;
                 }
-
                 GestureEvent::Scroll { dy } => {
                     mouse.scroll(dy)?;
                 }
-
                 GestureEvent::DoubleClick => {
                     log::debug!("Double click");
                     mouse.double_click()?;
                 }
-
                 GestureEvent::HandLost => {
                     log::debug!("Hand lost");
                 }

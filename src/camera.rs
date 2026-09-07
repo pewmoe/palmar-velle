@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use image::RgbImage;
 use nokhwa::{
     pixel_format::RgbFormat,
-    utils::{CameraIndex, RequestedFormat, RequestedFormatType},
+    utils::{CameraIndex, RequestedFormat, RequestedFormatType, Resolution, FrameFormat},
     Camera,
 };
 
@@ -13,13 +13,23 @@ pub struct WebcamCapture {
 impl WebcamCapture {
     pub fn open(index: u32) -> Result<Self> {
         let index = CameraIndex::Index(index);
-        let format =
-            RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestFrameRate);
+        
+        // Request a lower resolution (640x480) to maximize FPS and reduce inference latency
+        let format = RequestedFormat::new::<RgbFormat>(
+            RequestedFormatType::Exact(nokhwa::utils::CameraFormat::new(
+                Resolution::new(640, 480),
+                FrameFormat::MJPEG, // Or FrameFormat::YUYV depending on what your cam prefers, MJPEG is usually safer for high FPS
+                30,                  // Target FPS
+            ))
+        );
+
         let mut camera =
-            Camera::new(index, format).context("opening camera (is another app using it?)")?;
+            Camera::new(index, format).context("opening camera with custom resolution")?;
+            
         camera
             .open_stream()
             .context("starting camera stream -- check that your user can access /dev/video*")?;
+            
         Ok(Self { camera })
     }
 
