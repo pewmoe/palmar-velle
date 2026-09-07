@@ -1,4 +1,4 @@
-# velle:BETA
+# palmar-velle:BETA
 
 A lightweight, high-performance gesture-controlled virtual mouse written in **Rust**, powered by computer vision and ONNX runtime (`ort`). `velle` transforms your standard webcam into a touchless cursor controller featuring smooth tracking, deadzone jitter reduction, and native Linux kernel-level input injection via `uinput`.
 
@@ -72,3 +72,7 @@ To stop the application at any time, press **Ctrl+C** in your terminal.
 * [**Nokhwa**](https://github.com/raymanfx/nokhwa) — Cross-platform webcam frame capture
 
 * [**uinput**](https://github.com/pop-os/uinput) — Linux kernel input event generation
+
+
+
+## this is my basically baby, I've been working on it for 4 months and you better believe it's gonna be the solution for gesture control.
