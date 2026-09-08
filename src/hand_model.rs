@@ -54,7 +54,12 @@ impl HandModel {
         })
     }
 
-    pub fn detect(&mut self, mat_frame: &core::Mat) -> Result<Option<Hand>> {
+    // Generic over MatTraitConst rather than a concrete &core::Mat: some
+    // opencv-rust calls (e.g. Mat::reshape) return a BoxedRef<'_, Mat>
+    // (a borrowed view), not an owned Mat, even though it supports all
+    // the same read operations. Accepting the trait instead of the
+    // concrete type lets callers pass either without an unnecessary copy.
+    pub fn detect(&mut self, mat_frame: &impl core::MatTraitConst) -> Result<Option<Hand>> {
         let fw = mat_frame.cols() as f32;
         let fh = mat_frame.rows() as f32;
 
@@ -65,21 +70,27 @@ impl HandModel {
         // 1. Fall back to centered crop if ROI is lost
         let roi = self.roi.unwrap_or_else(|| centered_roi(fw, fh));
 
-        // 2. OpenCV Native Crop & Resize
+        // 2. OpenCV native crop & resize.
+        //
+        // mat_frame is already RGB (main.rs passes the camera frame through
+        // with no BGR conversion), so we crop and resize directly with no
+        // color conversion here.
         let crop_rect = core::Rect::new(
             (roi.x0.round() as i32).clamp(0, fw as i32 - 1),
             (roi.y0.round() as i32).clamp(0, fh as i32 - 1),
-            (roi.size.round() as i32).min(fw as i32 - (roi.x0.round() as i32).clamp(0, fw as i32 - 1)).max(1),
-            (roi.size.round() as i32).min(fh as i32 - (roi.y0.round() as i32).clamp(0, fh as i32 - 1)).max(1),
+            (roi.size.round() as i32)
+                .min(fw as i32 - (roi.x0.round() as i32).clamp(0, fw as i32 - 1))
+                .max(1),
+            (roi.size.round() as i32)
+                .min(fh as i32 - (roi.y0.round() as i32).clamp(0, fh as i32 - 1))
+                .max(1),
         );
 
         let cropped = core::Mat::roi(mat_frame, crop_rect)?;
-        let mut rgb_crop = core::Mat::default();
-        imgproc::cvt_color(&cropped, &mut rgb_crop, imgproc::COLOR_BGR2RGB, 0)?;
 
         let mut resized = core::Mat::default();
         imgproc::resize(
-            &rgb_crop,
+            &cropped,
             &mut resized,
             core::Size::new(MODEL_INPUT, MODEL_INPUT),
             0.0,
@@ -131,7 +142,7 @@ impl HandModel {
         }
         self.misses = 0;
 
-        // 5. Landmark Coordinate Remapping
+        // 5. Landmark coordinate remapping
         let mut points = [Point3::default(); 21];
         let (mut min_x, mut min_y, mut max_x, mut max_y) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
 
@@ -161,10 +172,10 @@ impl HandModel {
         let cy = (min_y + max_y) * 0.5 * fh;
 
         let target_size = (bbox_w.max(bbox_h) * 1.5).max(fw.min(fh) * MIN_CROP_FRACTION);
-        
+
         // Smooth ROI transitions using simple EMA
         let new_size = roi.size * 0.6 + target_size * 0.4;
-        
+
         self.roi = Some(Roi {
             x0: cx - new_size / 2.0,
             y0: cy - new_size / 2.0,

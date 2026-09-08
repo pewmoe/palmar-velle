@@ -5,7 +5,7 @@ mod landmarks;
 mod mouse;
 
 use anyhow::{Context, Result};
-use opencv::{core, imgproc, prelude::*};
+use opencv::{core, prelude::*};
 use std::env;
 
 use camera::WebcamCapture;
@@ -52,10 +52,7 @@ fn main() -> Result<()> {
 
     let (camera_w, camera_h) = camera.resolution();
 
-    println!(
-        "Camera resolution: {}x{}",
-        camera_w, camera_h
-    );
+    println!("Camera resolution: {}x{}", camera_w, camera_h);
 
     println!("Loading hand model...");
 
@@ -89,11 +86,16 @@ fn main() -> Result<()> {
             .next_frame()
             .context("failed to capture camera frame")?;
 
-        let width = rgb.width() as i32;
         let height = rgb.height() as i32;
 
         // ------------------------------------------------------------
-        // 2. Convert RGB image to an OpenCV BGR Mat.
+        // 2. Wrap the RGB image as an OpenCV Mat.
+        //
+        // hand_model.rs now expects the incoming Mat to already be RGB
+        // (it crops and resizes directly with no color conversion), so
+        // we deliberately do NOT convert to BGR here anymore. Converting
+        // to BGR here while hand_model.rs assumes RGB was silently
+        // swapping the R and B channels going into the model.
         // ------------------------------------------------------------
 
         let rgb_data = rgb.as_raw();
@@ -105,25 +107,12 @@ fn main() -> Result<()> {
             .reshape(3, height)
             .context("failed to reshape camera frame")?;
 
-        let mut bgr_mat = core::Mat::default();
-
-        imgproc::cvt_color(
-            &rgb_mat,
-            &mut bgr_mat,
-            imgproc::COLOR_RGB2BGR,
-            0,
-        )
-        .context("failed to convert RGB frame to BGR")?;
-
-        debug_assert_eq!(bgr_mat.cols(), width);
-        debug_assert_eq!(bgr_mat.rows(), height);
-
         // ------------------------------------------------------------
         // 3. Run hand detection / landmark inference
         // ------------------------------------------------------------
 
         let hand = model
-            .detect(&bgr_mat)
+            .detect(&rgb_mat)
             .context("hand model inference failed")?;
 
         // ------------------------------------------------------------
@@ -166,6 +155,7 @@ fn main() -> Result<()> {
                 }
                 GestureEvent::HandLost => {
                     log::debug!("Hand lost");
+                    mouse.reset();
                 }
             }
         }

@@ -4,10 +4,14 @@
 //!   - Palm center position -> cursor movement
 //!   - Thumb + index pinch -> primary click / drag
 //!   - Thumb + middle pinch -> secondary click
-//!   - Thumb + ring pinch -> vertical scrolling
+//!   - Thumb + index + middle pinch -> vertical scrolling
 //!   - Two quick index pinches -> double click
 //!
-//! All distances are normalized landmark distances.
+//! Pinch distances are normalized by hand scale (wrist-to-index-knuckle
+//! distance), not raw frame-fraction distance, so the same physical pinch
+//! triggers consistently whether your hand is close to or far from the
+//! camera. Pinch state changes also require a few consecutive confirming
+//! frames before firing, to reject single-frame landmark jitter.
 
 use crate::landmarks::{Hand, INDEX_TIP, MIDDLE_TIP, THUMB_TIP};
 
@@ -28,20 +32,90 @@ pub enum GestureEvent {
     HandLost,
 }
 
+/// Tracks a boolean pinch/no-pinch state with hysteresis (different enter
+/// vs exit thresholds) plus a frame-count debounce, so a state change only
+/// fires once the new condition has been true for several consecutive
+/// frames in a row -- not just one noisy frame.
+struct DebouncedPinch {
+    is_pinched: bool,
+    enter_streak: u32,
+    exit_streak: u32,
+}
+
+impl DebouncedPinch {
+    fn new() -> Self {
+        Self {
+            is_pinched: false,
+            enter_streak: 0,
+            exit_streak: 0,
+        }
+    }
+
+    /// `raw_pinched` / `raw_released` are this frame's instantaneous
+    /// threshold checks (with hysteresis already applied at the caller).
+    /// Returns the debounced state for this frame.
+    fn update(&mut self, raw_pinched: bool, raw_released: bool, confirm_frames: u32) -> bool {
+        if !self.is_pinched {
+            if raw_pinched {
+                self.enter_streak += 1;
+                if self.enter_streak >= confirm_frames {
+                    self.is_pinched = true;
+                    self.enter_streak = 0;
+                    self.exit_streak = 0;
+                }
+            } else {
+                self.enter_streak = 0;
+            }
+        } else {
+            if raw_released {
+                self.exit_streak += 1;
+                if self.exit_streak >= confirm_frames {
+                    self.is_pinched = false;
+                    self.exit_streak = 0;
+                    self.enter_streak = 0;
+                }
+            } else {
+                self.exit_streak = 0;
+            }
+        }
+
+        self.is_pinched
+    }
+
+    fn reset(&mut self) {
+        self.is_pinched = false;
+        self.enter_streak = 0;
+        self.exit_streak = 0;
+    }
+}
+
 pub struct GestureRecognizer {
     is_primary_down: bool,
     is_secondary_down: bool,
 
-    // Scrolling state.
     is_scrolling: bool,
     last_scroll_y: Option<f32>,
 
-    // Used for double-click detection.
     last_primary_release_ms: Option<u64>,
 
-    // Monotonic timestamp supplied internally.
+    index_pinch: DebouncedPinch,
+    middle_pinch: DebouncedPinch,
+
     start_time: std::time::Instant,
 }
+
+// Number of consecutive frames a pinch condition must hold before it's
+// treated as a real state change. At ~30fps this is roughly 65-100ms --
+// enough to reject single-frame landmark jitter without adding
+// perceptible input lag.
+const PINCH_CONFIRM_FRAMES: u32 = 2;
+
+// Pinch thresholds as a RATIO of hand scale (wrist-to-index-knuckle
+// distance), not raw frame-normalized distance. This makes the threshold
+// invariant to how close your hand is to the camera. Tune these two if
+// pinches feel too easy/hard to trigger; keep enter < exit for hysteresis.
+const PINCH_ENTER_RATIO: f32 = 0.45;
+const PINCH_EXIT_RATIO: f32 = 0.65;
 
 impl GestureRecognizer {
     pub fn new() -> Self {
@@ -53,6 +127,9 @@ impl GestureRecognizer {
             last_scroll_y: None,
 
             last_primary_release_ms: None,
+
+            index_pinch: DebouncedPinch::new(),
+            middle_pinch: DebouncedPinch::new(),
 
             start_time: std::time::Instant::now(),
         }
@@ -84,6 +161,9 @@ impl GestureRecognizer {
                 self.is_scrolling = false;
                 self.last_scroll_y = None;
 
+                self.index_pinch.reset();
+                self.middle_pinch.reset();
+
                 events.push(GestureEvent::HandLost);
 
                 return events;
@@ -95,9 +175,9 @@ impl GestureRecognizer {
         let middle = &hand.landmarks[MIDDLE_TIP];
 
         // ------------------------------------------------------------
-        // Cursor movement (Palm Center Centroid)
+        // Cursor movement (palm center centroid)
         // ------------------------------------------------------------
-        let wrist = &hand.landmarks[0];     // WRIST
+        let wrist = &hand.landmarks[0]; // WRIST
         let index_mcp = &hand.landmarks[5]; // INDEX_FINGER_MCP
         let pinky_mcp = &hand.landmarks[17]; // PINKY_MCP
 
@@ -110,26 +190,42 @@ impl GestureRecognizer {
         });
 
         // ------------------------------------------------------------
-        // Pinch distances
+        // Hand scale reference: wrist-to-index-knuckle distance stays
+        // roughly constant for a given hand regardless of pinch state,
+        // and scales with how close the hand is to the camera -- so
+        // dividing pinch distances by it makes the threshold
+        // distance-invariant. Floor it to avoid divide-by-near-zero on
+        // a bad frame.
+        // ------------------------------------------------------------
+        let hand_scale = wrist.dist(index_mcp).max(0.02);
+
+        // ------------------------------------------------------------
+        // Pinch ratios (distance-invariant)
         // ------------------------------------------------------------
 
-        let thumb_index = thumb.dist(index);
-        let thumb_middle = thumb.dist(middle);
+        let thumb_index_ratio = thumb.dist(index) / hand_scale;
+        let thumb_middle_ratio = thumb.dist(middle) / hand_scale;
 
-        // Small threshold = pinch.
-        const PINCH_ENTER: f32 = 0.10;
-        const PINCH_EXIT: f32 = 0.14;
+        let index_raw_pinched = thumb_index_ratio < PINCH_ENTER_RATIO;
+        let index_raw_released = thumb_index_ratio > PINCH_EXIT_RATIO;
 
-        let index_pinched = thumb_index < PINCH_ENTER;
-        let index_released = thumb_index > PINCH_EXIT;
+        let middle_raw_pinched = thumb_middle_ratio < PINCH_ENTER_RATIO;
+        let middle_raw_released = thumb_middle_ratio > PINCH_EXIT_RATIO;
 
-        let middle_pinched = thumb_middle < PINCH_ENTER;
-        let middle_released = thumb_middle > PINCH_EXIT;
+        let index_pinched =
+            self.index_pinch
+                .update(index_raw_pinched, index_raw_released, PINCH_CONFIRM_FRAMES);
+        let middle_pinched =
+            self.middle_pinch
+                .update(middle_raw_pinched, middle_raw_released, PINCH_CONFIRM_FRAMES);
+
+        let index_released = !index_pinched;
+        let middle_released = !middle_pinched;
 
         let scroll_pinched = index_pinched && middle_pinched;
 
         // ------------------------------------------------------------
-        // Thumb + Index + Middle pinch = scroll
+        // Thumb + index + middle pinch = scroll
         // ------------------------------------------------------------
         //
         // While scrolling, normal left/right clicks are suppressed.
@@ -166,7 +262,6 @@ impl GestureRecognizer {
             return events;
         }
 
-        // Ring pinch ended.
         if self.is_scrolling {
             self.is_scrolling = false;
             self.last_scroll_y = None;
