@@ -26,7 +26,14 @@ impl OneEuroFilter {
 
     fn filter(&mut self, x: f32, t: Instant) -> f32 {
         if let (Some(x_prev), Some(t_prev)) = (self.x_prev, self.t_prev) {
-            let dt = (t - t_prev).as_secs_f32().max(1e-5);
+            // Clamp dt to a sane range. Without this, one abnormally slow
+            // frame (e.g. a GC pause, a scheduling hiccup, or previously,
+            // the CLAHE-on-large-crop cost) produces a huge dt right after
+            // it -- which pushes alpha toward 1 and makes the filter
+            // snap straight to the raw value instead of smoothing,
+            // visible as a sudden cursor jump. Capping dt keeps the
+            // filter's behavior bounded even if frame timing hiccups.
+            let dt = (t - t_prev).as_secs_f32().clamp(1e-3, 0.1);
             let dx = (x - x_prev) / dt;
 
             let alpha_d = self.alpha(dt, self.d_cutoff);
@@ -117,8 +124,8 @@ impl VirtualMouse {
             // scale gives roughly comparable full-screen travel distance.
             const SENSITIVITY: f32 = 3000.0;
 
-            let dx = ((target_x - last_x) * SENSITIVITY) as i32;
-            let dy = ((target_y - last_y) * SENSITIVITY) as i32;
+        let dx = (((target_x - last_x) * SENSITIVITY).round() as i32).clamp(-32767, 32767);
+        let dy = (((target_y - last_y) * SENSITIVITY).round() as i32).clamp(-32767, 32767);
 
             if dx != 0 {
                 self.device.send(RelPosition::X, dx)?;
