@@ -38,6 +38,44 @@ Before building and running `velle`, verify your Linux environment satisfies the
 
 4. **Device Permissions**: Ensure your user account has permission to access your webcam (`/dev/video*`) and create virtual input devices (`uinput`). If `/dev/uinput` isn't writable by your user, add yourself to the relevant group (e.g. `input`) and log out/in.
 
+
+## Installation & Quick Start (No Compilation Required)
+
+You no longer need to install development libraries or compile the source code from scratch. You can download and deploy the standalone binary instantly:
+
+1. Go to the **Releases** page on this GitHub repository and download the latest compiled `palmar-velle` binary.
+2. Download the `hand_landmark.onnx` model file and place it in the same directory as the binary.
+3. Open a terminal in that folder and make the binary executable:
+   ```bash
+   chmod +x palmar-velle
+   ```
+
+## Setup Permissions
+
+Because velle interacts directly with your webcam and creates a virtual system pointer device, your user account needs hardware permissions. 
+
+If running the application throws a permission error, add your user to the standard input/video groups and log out/in to apply the changes:
+
+```bash
+sudo usermod -aG input,video $USER
+```
+
+## Usage
+
+Launch the standalone executable by passing the path to the ONNX model and your webcam index (usually `0`):
+
+```bash
+./palmar-velle hand_landmark.onnx 0
+```
+
+To stop the virtual mouse at any time, press **Ctrl+C** in your terminal.
+
+### Verifying the virtual mouse device
+While velle is running, you can confirm your system safely recognizes the virtual pointer device:
+```bash
+sudo libinput list-devices | grep -A5 "Gesture Control"
+```
+
 ## Installation & Building
 
 1. Clone or navigate to your repository workspace:
