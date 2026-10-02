@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use image::RgbImage;
 use nokhwa::{
     pixel_format::RgbFormat,
-    utils::{CameraIndex, RequestedFormat, RequestedFormatType, Resolution, FrameFormat},
+    utils::{CameraIndex, RequestedFormat, RequestedFormatType},
     Camera,
 };
 
@@ -13,29 +13,29 @@ pub struct WebcamCapture {
 impl WebcamCapture {
     pub fn open(index: u32) -> Result<Self> {
         let index = CameraIndex::Index(index);
-        
-        // Request a lower resolution (640x480) to maximize FPS and reduce inference latency
+
+        // Instead of hardcoding MJPEG/YUYV or a fixed resolution, let nokhwa
+        // query the device and automatically select the format that yields
+        // the highest frame rate natively supported by the hardware.
         let format = RequestedFormat::new::<RgbFormat>(
-            RequestedFormatType::Exact(nokhwa::utils::CameraFormat::new(
-                Resolution::new(640, 480),
-                FrameFormat::MJPEG, // Or FrameFormat::YUYV depending on what your cam prefers, MJPEG is usually safer for high FPS
-                30,                  // Target FPS
-            ))
+            RequestedFormatType::AbsoluteHighestFrameRate,
         );
 
         let mut camera =
-            Camera::new(index, format).context("opening camera with custom resolution")?;
-            
+            Camera::new(index, format).context("opening camera with auto-negotiated format")?;
+
         camera
             .open_stream()
             .context("starting camera stream -- check that your user can access /dev/video*")?;
-            
+
         Ok(Self { camera })
     }
 
     /// Grab the next frame as an RGB image. Blocks until a frame is ready.
     pub fn next_frame(&mut self) -> Result<RgbImage> {
         let frame = self.camera.frame().context("reading camera frame")?;
+        
+        // nokhwa decodes YUYV, MJPEG, or raw buffers into a standard RgbImage
         let decoded = frame
             .decode_image::<RgbFormat>()
             .context("decoding camera frame")?;
