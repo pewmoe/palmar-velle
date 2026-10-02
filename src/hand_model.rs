@@ -24,14 +24,8 @@ pub struct HandModel {
     last_hand: Option<Hand>,
 }
 
-pub type HandTracker = HandModel;
-
 impl HandModel {
     pub fn new(model_path: &str) -> Result<Self> {
-        Self::load(model_path)
-    }
-
-    pub fn load(model_path: &str) -> Result<Self> {
         let session = Session::builder()
             .map_err(|e| anyhow::anyhow!("session builder failed: {e}"))?
             .with_optimization_level(GraphOptimizationLevel::Level3)
@@ -56,6 +50,7 @@ impl HandModel {
         })
     }
 
+    /// High-level detector pipeline
     pub fn detect(&mut self, frame: &impl core::MatTraitConst) -> Result<Option<Hand>> {
         let fw = frame.cols() as f32;
         let fh = frame.rows() as f32;
@@ -66,12 +61,54 @@ impl HandModel {
 
         let roi = self.roi.unwrap_or_else(|| centered_roi(fw, fh));
 
-        if !roi.x0.is_finite()
-            || !roi.y0.is_finite()
-            || !roi.size.is_finite()
-            || roi.size <= 0.0
-        {
+        // 1. Crop image, apply CLAHE contrast enhancement, and build NCHW float buffer
+        let input_data = match self.preprocess_crop(frame, &roi, fw, fh)? {
+            Some(data) => data,
+            None => {
+                self.roi = None;
+                return Ok(None);
+            }
+        };
+
+        // 2. Run model inference
+        let (landmarks, conf, handedness) = match self.run_inference(input_data) {
+            Ok(res) => res,
+            Err(_) => return Ok(None),
+        };
+
+        // 3. Handle confidence thresholds & low-light frame drops
+        if conf < CONF_THRESHOLD {
+            self.misses = self.misses.saturating_add(1);
+            if self.misses <= CONFIDENCE_HOLD_FRAMES {
+                return Ok(self.last_hand.clone());
+            }
             self.roi = None;
+            self.last_hand = None;
+            return Ok(None);
+        }
+
+        self.misses = 0;
+
+        // 4. Calculate 3D positions and update tracking ROI for the next frame
+        let hand = self.build_hand_and_update_roi(&landmarks, conf, handedness, &roi, fw, fh);
+        self.last_hand = Some(hand.clone());
+        Ok(Some(hand))
+    }
+
+    // =========================================================================
+    // HELPER FUNCTIONS (Split logic into smaller pieces)
+    // =========================================================================
+
+    /// Cuts the hand crop, applies CLAHE contrast adjustment on L channel, 
+    /// and flattens bytes into an ONNX tensor buffer.
+    fn preprocess_crop(
+        &self,
+        frame: &impl core::MatTraitConst,
+        roi: &Roi,
+        fw: f32,
+        fh: f32,
+    ) -> Result<Option<Vec<f32>>> {
+        if !roi.x0.is_finite() || !roi.y0.is_finite() || roi.size <= 0.0 {
             return Ok(None);
         }
 
@@ -81,7 +118,6 @@ impl HandModel {
         let height = roi.size.round().clamp(1.0, fh - y0 as f32) as i32;
 
         let crop = core::Mat::roi(frame, core::Rect::new(x0, y0, width, height))?;
-
         let mut resized = core::Mat::default();
         imgproc::resize(
             &crop,
@@ -92,9 +128,9 @@ impl HandModel {
             imgproc::INTER_LINEAR,
         )?;
 
+        // CLAHE Enhancement on L channel
         let mut lab = core::Mat::default();
         imgproc::cvt_color(&resized, &mut lab, imgproc::COLOR_RGB2Lab, 0)?;
-
         let mut channels = core::Vector::<core::Mat>::new();
         core::split(&lab, &mut channels)?;
 
@@ -102,10 +138,9 @@ impl HandModel {
             return Ok(None);
         }
 
-        let l_channel = channels.get(0)?;
         let mut equalized_l = core::Mat::default();
         let mut clahe = imgproc::create_clahe(2.0, core::Size::new(8, 8))?;
-        clahe.apply(&l_channel, &mut equalized_l)?;
+        clahe.apply(&channels.get(0)?, &mut equalized_l)?;
         channels.set(0, equalized_l)?;
 
         let mut enhanced = core::Mat::default();
@@ -113,100 +148,71 @@ impl HandModel {
         core::merge(&channels, &mut merged)?;
         imgproc::cvt_color(&merged, &mut enhanced, imgproc::COLOR_Lab2RGB, 0)?;
 
+        // Flatten to Planar Float Buffer [1, 3, 224, 224]
         let width = MODEL_INPUT as usize;
         let height = MODEL_INPUT as usize;
         let spatial = width * height;
-        let expected_len = spatial * 3;
-        let row_stride = enhanced.step1(0)?;
         let bytes = enhanced.data_bytes()?;
-
-        if enhanced.rows() != MODEL_INPUT
-            || enhanced.cols() != MODEL_INPUT
-            || enhanced.channels() != 3
-            || row_stride < width * 3
-            || bytes.len() < row_stride * height
-        {
-            return Ok(None);
-        }
-
-        let mut input_data = vec![0.0f32; expected_len];
+        let mut input_data = vec![0.0f32; spatial * 3];
 
         for row in 0..height {
-            let row_start = row * row_stride;
-
+            let row_start = row * enhanced.step1(0)?;
             for col in 0..width {
                 let pixel = row_start + col * 3;
                 let index = row * width + col;
-
                 input_data[index] = bytes[pixel] as f32 / 255.0;
                 input_data[spatial + index] = bytes[pixel + 1] as f32 / 255.0;
                 input_data[2 * spatial + index] = bytes[pixel + 2] as f32 / 255.0;
             }
         }
 
-        let input = Tensor::from_array((
-            [1usize, 3, width, height],
-            input_data,
-        ))
-        .map_err(|e| anyhow::anyhow!("creating input tensor failed: {e}"))?;
+        Ok(Some(input_data))
+    }
 
-        let outputs = self
-            .session
-            .run(ort::inputs![self.input_name.as_str() => input])
-            .map_err(|e| anyhow::anyhow!("inference failed: {e}"))?;
+    /// Sends tensor data to ONNX session and extracts raw array outputs
+fn run_inference(&mut self, input_data: Vec<f32>) -> Result<(Vec<f32>, f32, f32)> {
+    let input = Tensor::from_array(([1usize, 3, MODEL_INPUT as usize, MODEL_INPUT as usize], input_data))
+        .map_err(|e| anyhow::anyhow!("creating tensor failed: {e}"))?;
 
-        if outputs.len() < 3 {
-            return Ok(None);
-        }
+    let outputs = self
+        .session
+        .run(ort::inputs![self.input_name.as_str() => input])
+        .map_err(|e| anyhow::anyhow!("inference failed: {e}"))?;
 
-        let (_, landmarks) = outputs[0].try_extract_tensor::<f32>()?;
-        let (_, confidence) = outputs[1].try_extract_tensor::<f32>()?;
-        let (_, handedness) = outputs[2].try_extract_tensor::<f32>()?;
+    if outputs.len() < 3 {
+        anyhow::bail!("invalid output length");
+    }
 
-        if landmarks.len() < 63 {
-            return Ok(None);
-        }
+    let (_, landmarks) = outputs[0].try_extract_tensor::<f32>()?;
+    let (_, confidence) = outputs[1].try_extract_tensor::<f32>()?;
+    let (_, handedness) = outputs[2].try_extract_tensor::<f32>()?;
 
-        let conf = confidence.first().copied().unwrap_or(0.0);
+    let conf = confidence.first().copied().unwrap_or(0.0);
+    let right_hand = handedness.first().copied().unwrap_or(0.5);
 
-        if !conf.is_finite() {
-            return Ok(None);
-        }
+    Ok((landmarks.to_vec(), conf, right_hand))
+}
 
-        if conf < CONF_THRESHOLD {
-            self.misses = self.misses.saturating_add(1);
-
-            if self.misses <= CONFIDENCE_HOLD_FRAMES {
-                return Ok(self.last_hand.clone());
-            }
-
-            self.roi = None;
-            self.last_hand = None;
-            return Ok(None);
-        }
-
-        self.misses = 0;
-
+    /// Maps crop landmarks back to whole-screen coordinates and updates ROI for next frame
+    fn build_hand_and_update_roi(
+        &mut self,
+        landmarks: &[f32],
+        conf: f32,
+        handedness_right: f32,
+        roi: &Roi,
+        fw: f32,
+        fh: f32,
+    ) -> Hand {
         let mut points = Vec::with_capacity(21);
-        let mut min_x = f32::INFINITY;
-        let mut min_y = f32::INFINITY;
-        let mut max_x = f32::NEG_INFINITY;
-        let mut max_y = f32::NEG_INFINITY;
+        let (mut min_x, mut min_y) = (f32::INFINITY, f32::INFINITY);
+        let (mut max_x, mut max_y) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
 
         for i in 0..21 {
-            let x = landmarks[i * 3];
-            let y = landmarks[i * 3 + 1];
-            let z = landmarks[i * 3 + 2];
-
             let point = Point3 {
-                x: (roi.x0 + x / MODEL_INPUT as f32 * roi.size) / fw,
-                y: (roi.y0 + y / MODEL_INPUT as f32 * roi.size) / fh,
-                z: z / MODEL_INPUT as f32,
+                x: (roi.x0 + landmarks[i * 3] / MODEL_INPUT as f32 * roi.size) / fw,
+                y: (roi.y0 + landmarks[i * 3 + 1] / MODEL_INPUT as f32 * roi.size) / fh,
+                z: landmarks[i * 3 + 2] / MODEL_INPUT as f32,
             };
-
-            if !point.x.is_finite() || !point.y.is_finite() || !point.z.is_finite() {
-                return Ok(None);
-            }
 
             min_x = min_x.min(point.x);
             min_y = min_y.min(point.y);
@@ -215,13 +221,9 @@ impl HandModel {
             points.push(point);
         }
 
+        // Bounding Box Dynamic Shift
         let bbox_w = (max_x - min_x) * fw;
         let bbox_h = (max_y - min_y) * fh;
-
-        if bbox_w <= 0.0 || bbox_h <= 0.0 {
-            return Ok(None);
-        }
-
         let center_x = (min_x + max_x) * 0.5 * fw;
         let center_y = (min_y + max_y) * 0.5 * fh;
 
@@ -236,21 +238,17 @@ impl HandModel {
             size,
         });
 
-        let hand = Hand {
+        Hand {
             landmarks: points.clone(),
             points,
             presence: conf,
-            handedness_right: handedness.first().copied().unwrap_or(0.5),
-        };
-
-        self.last_hand = Some(hand.clone());
-        Ok(Some(hand))
+            handedness_right,
+        }
     }
 }
 
 fn centered_roi(width: f32, height: f32) -> Roi {
     let size = width.min(height) * 0.8;
-
     Roi {
         x0: (width - size) * 0.5,
         y0: (height - size) * 0.5,
