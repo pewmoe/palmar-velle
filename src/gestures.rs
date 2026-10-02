@@ -114,8 +114,8 @@ const PINCH_CONFIRM_FRAMES: u32 = 2;
 // distance), not raw frame-normalized distance. This makes the threshold
 // invariant to how close your hand is to the camera. Tune these two if
 // pinches feel too easy/hard to trigger; keep enter < exit for hysteresis.
-const PINCH_ENTER_RATIO: f32 = 0.45;
-const PINCH_EXIT_RATIO: f32 = 0.65;
+const PINCH_ENTER_RATIO: f32 = 0.38;
+const PINCH_EXIT_RATIO: f32 = 0.70;
 
 impl GestureRecognizer {
     pub fn new() -> Self {
