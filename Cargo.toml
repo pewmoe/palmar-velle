@@ -3,6 +3,7 @@ name = "palmar-velle-gesture-controls"
 version = "0.1.0"
 edition = "2021"
 description = "Webcam hand-gesture mouse control for Linux (Wayland), gestures modeled on visionOS pinch/point interactions (still beta version)"
+license = "AGPL-3.0-or-later"
 
 [[bin]]
 name = "palmar-velle"
