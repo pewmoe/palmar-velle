@@ -123,4 +123,12 @@ You should see `Capabilities: pointer` listed for the "Gesture Control Virtual M
 
 - [**uinput**](https://github.com/pop-os/uinput) — Linux kernel input event generation
 
-## this is my basically baby, I've been working on it for 4 months and you better believe it's gonna be the solution for gesture control.
+## this is basically my baby, I've been working on it for 4 months before release and you better believe it's gonna be the solution for gesture control.
+
+## License
+
+This project is licensed under the **AGPLv3**. 
+
+What that means: You are completely free to use, tweak, and hack on this at home. But if you try to take my 4 months of hard work, bake it into a commercial or closed-source app, and profit off it without sharing your source code, you are violating the license. 
+
+For commercial licensing inquiries that bypass the AGPLv3 restrictions, open an issue or contact me directly.
