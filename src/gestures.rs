@@ -105,15 +105,11 @@ pub struct GestureRecognizer {
 }
 
 // Number of consecutive frames a pinch condition must hold before it's
-// treated as a real state change. At ~30fps this is roughly 65-100ms --
-// enough to reject single-frame landmark jitter without adding
-// perceptible input lag.
+// treated as a real state change.
 const PINCH_CONFIRM_FRAMES: u32 = 2;
 
 // Pinch thresholds as a RATIO of hand scale (wrist-to-index-knuckle
-// distance), not raw frame-normalized distance. This makes the threshold
-// invariant to how close your hand is to the camera. Tune these two if
-// pinches feel too easy/hard to trigger; keep enter < exit for hysteresis.
+// distance). Keep enter < exit for hysteresis.
 const PINCH_ENTER_RATIO: f32 = 0.38;
 const PINCH_EXIT_RATIO: f32 = 0.70;
 
@@ -137,6 +133,16 @@ impl GestureRecognizer {
 
     fn now_ms(&self) -> u64 {
         self.start_time.elapsed().as_millis() as u64
+    }
+
+    /// True while any built-in pinch/scroll/button state is active. Custom
+    /// gestures are suppressed during this so they never compete with it.
+    pub fn is_engaged(&self) -> bool {
+        self.is_primary_down
+            || self.is_secondary_down
+            || self.is_scrolling
+            || self.index_pinch.is_pinched
+            || self.middle_pinch.is_pinched
     }
 
     pub fn process(&mut self, hand_option: Option<&Hand>) -> Vec<GestureEvent> {
@@ -189,20 +195,11 @@ impl GestureRecognizer {
             y: palm_y.clamp(0.0, 1.0),
         });
 
-        // ------------------------------------------------------------
-        // Hand scale reference: wrist-to-index-knuckle distance stays
-        // roughly constant for a given hand regardless of pinch state,
-        // and scales with how close the hand is to the camera -- so
-        // dividing pinch distances by it makes the threshold
-        // distance-invariant. Floor it to avoid divide-by-near-zero on
-        // a bad frame.
-        // ------------------------------------------------------------
+        // Hand scale reference: wrist-to-index-knuckle distance. Floored to
+        // avoid divide-by-near-zero on a bad frame.
         let hand_scale = wrist.dist(index_mcp).max(0.02);
 
-        // ------------------------------------------------------------
         // Pinch ratios (distance-invariant)
-        // ------------------------------------------------------------
-
         let thumb_index_ratio = thumb.dist(index) / hand_scale;
         let thumb_middle_ratio = thumb.dist(middle) / hand_scale;
 
@@ -226,11 +223,8 @@ impl GestureRecognizer {
 
         // ------------------------------------------------------------
         // Thumb + index + middle pinch = scroll
-        // ------------------------------------------------------------
-        //
         // While scrolling, normal left/right clicks are suppressed.
         // ------------------------------------------------------------
-
         if scroll_pinched {
             if !self.is_scrolling {
                 self.is_scrolling = true;
@@ -270,9 +264,6 @@ impl GestureRecognizer {
         // ------------------------------------------------------------
         // Primary click / drag
         // ------------------------------------------------------------
-
-        // Only allow primary pinch if the middle finger is NOT
-        // simultaneously pinched.
         if index_pinched && !middle_pinched && !self.is_primary_down {
             self.is_primary_down = true;
 
@@ -301,8 +292,6 @@ impl GestureRecognizer {
         // ------------------------------------------------------------
         // Secondary click / drag
         // ------------------------------------------------------------
-
-        // Only allow secondary pinch when index isn't also pinched.
         if middle_pinched && !index_pinched && !self.is_secondary_down {
             self.is_secondary_down = true;
             events.push(GestureEvent::SecondaryDown);

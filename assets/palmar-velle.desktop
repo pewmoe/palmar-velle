@@ -1,0 +1,21 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Palmar Velle
+GenericName=Hand Gesture Control
+Comment=Control your pointer and shortcuts with webcam hand gestures
+Exec=palmar-velle --gui
+Icon=palmar-velle
+Terminal=false
+Categories=Utility;Accessibility;
+Keywords=gesture;hand;mouse;webcam;accessibility;touchless;camera;
+StartupWMClass=palmar-velle
+Actions=TogglePreview;ReloadGestures;
+
+[Desktop Action TogglePreview]
+Name=Toggle camera preview
+Exec=pkill -USR1 -x palmar-velle
+
+[Desktop Action ReloadGestures]
+Name=Reload custom gestures
+Exec=pkill -HUP -x palmar-velle

@@ -1,0 +1,4 @@
+# palmar-velle: let the 'input' group (and the active-seat user, via uaccess)
+# create virtual input devices through /dev/uinput.
+# static_node makes udev create the node at boot even before the module loads.
+KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", TAG+="uaccess", MODE="0660", GROUP="input"

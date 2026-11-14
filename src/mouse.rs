@@ -26,13 +26,6 @@ impl OneEuroFilter {
 
     fn filter(&mut self, x: f32, t: Instant) -> f32 {
         if let (Some(x_prev), Some(t_prev)) = (self.x_prev, self.t_prev) {
-            // Clamp dt to a sane range. Without this, one abnormally slow
-            // frame (e.g. a GC pause, a scheduling hiccup, or previously,
-            // the CLAHE-on-large-crop cost) produces a huge dt right after
-            // it -- which pushes alpha toward 1 and makes the filter
-            // snap straight to the raw value instead of smoothing,
-            // visible as a sudden cursor jump. Capping dt keeps the
-            // filter's behavior bounded even if frame timing hiccups.
             let dt = (t - t_prev).as_secs_f32().clamp(1e-3, 0.1);
             let dx = (x - x_prev) / dt;
 
@@ -65,24 +58,12 @@ pub struct VirtualMouse {
     device: uinput::Device,
     filter_x: OneEuroFilter,
     filter_y: OneEuroFilter,
-    // Last filtered (not raw) position, used to compute a relative delta.
-    // None right after creation or right after a HandLost reset, so the
-    // very next move_to() only primes state instead of emitting a
-    // potentially huge jump.
     last_pos: Option<(f32, f32)>,
 }
 
 impl VirtualMouse {
     pub fn new() -> Result<Self> {
-        // NOTE: this device intentionally uses REL_X/REL_Y (relative motion),
-        // not ABS_X/ABS_Y. A uinput device advertising ABS_X/ABS_Y plus
-        // BTN_LEFT (== BTN_MOUSE, same kernel code) with no BTN_TOUCH /
-        // BTN_TOOL_PEN gets classified by udev/libinput as a graphics
-        // tablet, not a pointer -- so compositors silently drop every
-        // position event. REL_X/REL_Y + BTN_LEFT is the unambiguous
-        // signature of a standard mouse and just works everywhere,
-        // including Wayland.
-        let device = uinput::default()?
+               let device = uinput::default()?
             .name("Gesture Control Virtual Mouse")?
             .event(Event::Controller(uinput::event::Controller::Mouse(
                 uinput::event::controller::Mouse::Left,
@@ -90,13 +71,15 @@ impl VirtualMouse {
             .event(Event::Controller(uinput::event::Controller::Mouse(
                 uinput::event::controller::Mouse::Right,
             )))?
+            .event(Event::Controller(uinput::event::Controller::Mouse(
+                uinput::event::controller::Mouse::Middle,
+            )))?
             .event(Event::Relative(Relative::Position(RelPosition::X)))?
             .event(Event::Relative(Relative::Position(RelPosition::Y)))?
             .event(uinput::event::Relative::Wheel(
                 uinput::event::relative::Wheel::Vertical,
             ))?
             .create()?;
-
         std::thread::sleep(std::time::Duration::from_millis(100));
 
         Ok(Self {
@@ -107,9 +90,6 @@ impl VirtualMouse {
         })
     }
 
-    /// x, y are normalized [0.0, 1.0] hand position (as before). Internally
-    /// this now converts the smoothed absolute target into a relative delta
-    /// before sending it to the kernel.
     pub fn move_to(&mut self, x: f32, y: f32) -> Result<()> {
         let x = 1.0 - x.clamp(0.0, 1.0);
         let y = y.clamp(0.0, 1.0);
@@ -119,13 +99,10 @@ impl VirtualMouse {
         let target_y = self.filter_y.filter(y, now);
 
         if let Some((last_x, last_y)) = self.last_pos {
-            // Tune this to taste -- higher = faster cursor travel per unit
-            // of normalized hand movement. 65535 was the old ABS max; this
-            // scale gives roughly comparable full-screen travel distance.
             const SENSITIVITY: f32 = 3000.0;
 
-        let dx = (((target_x - last_x) * SENSITIVITY).round() as i32).clamp(-32767, 32767);
-        let dy = (((target_y - last_y) * SENSITIVITY).round() as i32).clamp(-32767, 32767);
+            let dx = (((target_x - last_x) * SENSITIVITY).round() as i32).clamp(-32767, 32767);
+            let dy = (((target_y - last_y) * SENSITIVITY).round() as i32).clamp(-32767, 32767);
 
             if dx != 0 {
                 self.device.send(RelPosition::X, dx)?;
@@ -143,9 +120,6 @@ impl VirtualMouse {
         Ok(())
     }
 
-    /// Call this whenever the hand is lost (GestureEvent::HandLost) so that
-    /// the next detected position doesn't produce one huge delta jump (or a
-    /// stale drag) when the hand reappears somewhere else in frame.
     pub fn reset(&mut self) {
         self.last_pos = None;
         self.filter_x = OneEuroFilter::new(0.8, 0.02);
@@ -166,7 +140,36 @@ impl VirtualMouse {
 
         Ok(())
     }
+    pub fn middle_button(&mut self, pressed: bool) -> Result<()> {
+        let value = if pressed { 1 } else { 0 };
 
+        self.device.send(
+            Event::Controller(uinput::event::Controller::Mouse(
+                uinput::event::controller::Mouse::Middle,
+            )),
+            value,
+        )?;
+
+        self.device.synchronize()?;
+
+        Ok(())
+    }
+
+    /// Wheel detents (REL_WHEEL). Positive = up.
+    pub fn wheel(&mut self, notches: i32) -> Result<()> {
+        if notches == 0 {
+            return Ok(());
+        }
+
+        self.device.send(
+            uinput::event::Relative::Wheel(uinput::event::relative::Wheel::Vertical),
+            notches,
+        )?;
+
+        self.device.synchronize()?;
+
+        Ok(())
+    }
     pub fn right_button(&mut self, pressed: bool) -> Result<()> {
         let value = if pressed { 1 } else { 0 };
 

@@ -1,0 +1,26 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        getent group input >/dev/null 2>&1 || addgroup --system input >/dev/null 2>&1 || true
+
+        # uinput is not loaded by default on every distro.
+        modprobe uinput >/dev/null 2>&1 || true
+
+        if command -v udevadm >/dev/null 2>&1; then
+            udevadm control --reload-rules >/dev/null 2>&1 || true
+            udevadm trigger --action=add --subsystem-match=misc --sysname-match=uinput >/dev/null 2>&1 || true
+        fi
+
+        command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q /usr/share/applications || true
+        command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+
+        echo "palmar-velle: the active desktop user gets uinput access automatically (uaccess)."
+        echo "palmar-velle: for other setups run: sudo usermod -aG input \$USER   (then log out and in)"
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0
