@@ -1,4 +1,4 @@
-# Maintainer: Your Name <you@example.com>
+
 pkgname=palmar-velle
 pkgver=0.2.0
 pkgrel=1
