@@ -109,7 +109,9 @@ pub struct GestureRecognizer {
 const PINCH_CONFIRM_FRAMES: u32 = 2;
 
 // Pinch thresholds as a RATIO of hand scale (wrist-to-index-knuckle
-// distance). Keep enter < exit for hysteresis.
+// distance), not raw frame-normalized distance. This makes the threshold
+// invariant to how close your hand is to the camera. Tune these two if
+// pinches feel too easy/hard to trigger; keep enter < exit for hysteresis.
 const PINCH_ENTER_RATIO: f32 = 0.38;
 const PINCH_EXIT_RATIO: f32 = 0.70;
 

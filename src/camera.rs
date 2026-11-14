@@ -14,6 +14,9 @@ impl WebcamCapture {
     pub fn open(index: u32) -> Result<Self> {
         let index = CameraIndex::Index(index);
 
+        // Instead of hardcoding MJPEG/YUYV or a fixed resolution, let nokhwa
+        // query the device and automatically select the format that yields
+        // the highest frame rate natively supported by the hardware.
         let format = RequestedFormat::new::<RgbFormat>(
             RequestedFormatType::AbsoluteHighestFrameRate,
         );
@@ -30,6 +33,8 @@ impl WebcamCapture {
 
     pub fn next_frame(&mut self) -> Result<RgbImage> {
         let frame = self.camera.frame().context("reading camera frame")?;
+
+        // nokhwa decodes YUYV, MJPEG, or raw buffers into a standard RgbImage
         let decoded = frame
             .decode_image::<RgbFormat>()
             .context("decoding camera frame")?;

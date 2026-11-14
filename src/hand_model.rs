@@ -50,6 +50,7 @@ impl HandModel {
         })
     }
 
+    /// High-level detector pipeline
     pub fn detect(&mut self, frame: &impl core::MatTraitConst) -> Result<Option<Hand>> {
         let fw = frame.cols() as f32;
         let fh = frame.rows() as f32;
@@ -60,6 +61,7 @@ impl HandModel {
 
         let roi = self.roi.unwrap_or_else(|| centered_roi(fw, fh));
 
+        // 1. Crop image, apply CLAHE contrast enhancement, and build NCHW float buffer
         let input_data = match self.preprocess_crop(frame, &roi, fw, fh)? {
             Some(data) => data,
             None => {
@@ -68,11 +70,13 @@ impl HandModel {
             }
         };
 
+        // 2. Run model inference
         let (landmarks, conf, handedness) = match self.run_inference(input_data) {
             Ok(res) => res,
             Err(_) => return Ok(None),
         };
 
+        // 3. Handle confidence thresholds & low-light frame drops
         if conf < CONF_THRESHOLD {
             self.misses = self.misses.saturating_add(1);
             if self.misses <= CONFIDENCE_HOLD_FRAMES {
@@ -85,11 +89,18 @@ impl HandModel {
 
         self.misses = 0;
 
+        // 4. Calculate 3D positions and update tracking ROI for the next frame
         let hand = self.build_hand_and_update_roi(&landmarks, conf, handedness, &roi, fw, fh);
         self.last_hand = Some(hand.clone());
         Ok(Some(hand))
     }
 
+    // =========================================================================
+    // HELPER FUNCTIONS (Split logic into smaller pieces)
+    // =========================================================================
+
+    /// Cuts the hand crop, applies CLAHE contrast adjustment on L channel,
+    /// and flattens bytes into an ONNX tensor buffer.
     fn preprocess_crop(
         &self,
         frame: &impl core::MatTraitConst,
@@ -117,6 +128,7 @@ impl HandModel {
             imgproc::INTER_LINEAR,
         )?;
 
+        // CLAHE Enhancement on L channel
         let mut lab = core::Mat::default();
         imgproc::cvt_color(&resized, &mut lab, imgproc::COLOR_RGB2Lab, 0)?;
         let mut channels = core::Vector::<core::Mat>::new();
@@ -136,6 +148,7 @@ impl HandModel {
         core::merge(&channels, &mut merged)?;
         imgproc::cvt_color(&merged, &mut enhanced, imgproc::COLOR_Lab2RGB, 0)?;
 
+        // Flatten to Planar Float Buffer [1, 3, 224, 224]
         let width = MODEL_INPUT as usize;
         let height = MODEL_INPUT as usize;
         let spatial = width * height;
@@ -155,7 +168,6 @@ impl HandModel {
 
         Ok(Some(input_data))
     }
-
     fn run_inference(&mut self, input_data: Vec<f32>) -> Result<(Vec<f32>, f32, f32)> {
         let input = Tensor::from_array(([1usize, 3, MODEL_INPUT as usize, MODEL_INPUT as usize], input_data))
             .map_err(|e| anyhow::anyhow!("creating tensor failed: {e}"))?;
@@ -179,6 +191,7 @@ impl HandModel {
         Ok((landmarks.to_vec(), conf, right_hand))
     }
 
+    /// Maps crop landmarks back to whole-screen coordinates and updates ROI for next frame
     fn build_hand_and_update_roi(
         &mut self,
         landmarks: &[f32],
@@ -206,6 +219,7 @@ impl HandModel {
             points.push(point);
         }
 
+        // Bounding Box Dynamic Shift
         let bbox_w = (max_x - min_x) * fw;
         let bbox_h = (max_y - min_y) * fh;
         let center_x = (min_x + max_x) * 0.5 * fw;
